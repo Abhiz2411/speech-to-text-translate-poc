@@ -20,9 +20,14 @@ response = client.models.count_tokens(
   model='gemini-2.5-flash',
   contents=[
         (
-            "Transcribe the spoken words exactly as heard. "
-            "Preserve the original languages used (Hindi, Gujarati, or mixed). "
-            "Do not translate — only transcribe the speech accurately."
+            "You are a professional speech translation assistant.\n"
+            "Listen to the given audio clip carefully and translate everything spoken "
+            "into clear, natural English.\n\n"
+            "The speaker may use Hindi, Gujarati, or a mix of both.\n"
+            "Do not provide the transcription in the original language—only output "
+            "the English translation.\n"
+            "Maintain the tone and meaning accurately, and ensure proper grammar and "
+            "punctuation in English.\n"
         ),
         myfile
     ]
