@@ -3,14 +3,12 @@ import json
 import time
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types
 
 # -------------------------------------------------------------
 # 1. CONFIGURATION
 # -------------------------------------------------------------
-INPUT_DIR = r"data"
-music_path = r'data\2_Negative_Memories.mp3'
-OUTPUT_DIR = r"output\translated\gemini_batch"
+AUDIO_PATH = r"data\2_Negative_Memories.mp3"  # Single audio or replace with loop for multiple
+OUTPUT_DIR = r"output\translated\gemini_batch_self"
 MODEL = "gemini-2.5-flash"
 PROMPT = (
     "Translate this audio clip into English. "
@@ -18,90 +16,137 @@ PROMPT = (
     "Do not transcribe; only provide the English translation. "
     "Preserve tone and meaning accurately with correct grammar."
 )
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+BATCH_FILE = os.path.join(OUTPUT_DIR, "batch_requests.json")
 
+# -------------------------------------------------------------
+# 2. INITIALIZATION
+# -------------------------------------------------------------
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY not found in .env file")
+    raise ValueError("GEMINI_API_KEY not found in .env file")
 
 client = genai.Client(api_key=API_KEY)
 
-print(f"Uploading music file: {music_path}")
-music_file = client.files.upload(
-    file=music_path,
-)
-print(f"Uploaded music file: {music_file.name} with MIME type: {music_file.mime_type}")
+# -------------------------------------------------------------
+# 3. UPLOAD AUDIO FILE
+# -------------------------------------------------------------
+print(f"Uploading audio: {AUDIO_PATH}")
+music_file = client.files.upload(file=AUDIO_PATH)
+print(f"Uploaded: {music_file.name} | MIME: {music_file.mime_type}")
 
+# -------------------------------------------------------------
+# 4. CREATE JSONL REQUEST FILE
+# -------------------------------------------------------------
 requests_data = [
-    {"key": "request_1", "request": {"contents": [{"parts": [{"text": "Explain how AI works in a few words"}]}]}},
-    {"key": "request_2_audio", "request": {"contents": [{"parts": [
-        {"text": PROMPT},
-        {"file_data":{"file_uri": music_file.uri, "mime_type": music_file.mime_type}}
-        ]}]}}
+    {
+        "key": "translation_request",
+        "request": {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": PROMPT},
+                        {
+                            "file_data": {
+                                "file_uri": music_file.uri,
+                                "mime_type": music_file.mime_type,
+                            }
+                        },
+                    ]
+                }
+            ]
+        },
+    }
 ]
 
-json_file_path = r'output\translated\gemini_batch_self\batch_requests.json'
-
-print(f"\nCreating JSONL file: {json_file_path}")
-with open(json_file_path, 'w') as f:
+print(f"Creating batch JSONL file: {BATCH_FILE}")
+with open(BATCH_FILE, "w", encoding="utf-8") as f:
     for req in requests_data:
-        f.write(json.dumps(req) + '\n')
+        f.write(json.dumps(req) + "\n")
 
-# 2. Upload JSONL file to File API.
-print(f"Uploading file: {json_file_path}")
-uploaded_batch_requests = client.files.upload(
-    file=json_file_path,
-    # config=types.UploadFileConfig(display_name='batch-input-file')
-)
-print(f"Uploaded file: {uploaded_batch_requests.name}")
+# -------------------------------------------------------------
+# 5. UPLOAD JSONL TO FILES API
+# -------------------------------------------------------------
+print("Uploading JSONL batch file...")
+uploaded_batch_file = client.files.upload(file=BATCH_FILE)
+print(f"Batch file uploaded: {uploaded_batch_file.name}")
 
-print("\nCreating batch job...")
-batch_job_from_file = client.batches.create(
+# -------------------------------------------------------------
+# 6. CREATE BATCH JOB
+# -------------------------------------------------------------
+print("Creating batch translation job...")
+batch_job = client.batches.create(
     model=MODEL,
-    src=uploaded_batch_requests.name,
-    config={
-        'display_name': 'my-batch-job-from-file',
-    }
+    src=uploaded_batch_file.name,
+    config={"display_name": "audio-translation-batch"},
 )
-print(f"Created batch job from file: {batch_job_from_file.name}")
+print(f"Job created: {batch_job.name}")
 
-# Note: You can check the status of any job by replacing its name here.
-# For example: job_name = 'batches/your-job-name-here'
-
-import time
-
-job_name = batch_job_from_file.name
-
-print(f"Polling status for job: {job_name}")
-
-# Poll the job status until it's completed.
+# -------------------------------------------------------------
+# 7. POLL UNTIL COMPLETED
+# -------------------------------------------------------------
+print("Waiting for translation to finish...")
 while True:
-    batch_job = client.batches.get(name=job_name)
-    if batch_job.state.name in ('JOB_STATE_SUCCEEDED', 'JOB_STATE_FAILED', 'JOB_STATE_CANCELLED'):
+    job = client.batches.get(name=batch_job.name)
+    if job.state.name in (
+        "JOB_STATE_SUCCEEDED",
+        "JOB_STATE_FAILED",
+        "JOB_STATE_CANCELLED",
+    ):
         break
-    print(f"Job not finished. Current state: {batch_job.state.name}. Waiting 30 seconds...")
-    time.sleep(30)
+    print(f"  Current state: {job.state.name} ...")
+    time.sleep(20)
 
-print(f"Job finished with state: {batch_job.state.name}")
-if batch_job.state.name == 'JOB_STATE_FAILED':
-    print(f"Error: {batch_job.error}")
+if job.state.name != "JOB_STATE_SUCCEEDED":
+    print(f"Job failed: {job.state.name}")
+    exit(1)
 
-# Retrieve and parse results
-if batch_job.state.name == 'JOB_STATE_SUCCEEDED':
-    # The output is in another file.
-    result_file_name = batch_job.dest.file_name
-    print(f"Results are in file: {result_file_name}")
+print("Translation job completed successfully.")
 
-    print("\nDownloading and parsing result file content...")
-    file_content_bytes = client.files.download(file=result_file_name)
-    file_content = file_content_bytes.decode('utf-8')
+# -------------------------------------------------------------
+# 8. DOWNLOAD RESULTS
+# -------------------------------------------------------------
+result_file = job.dest.file_name
+print(f"Downloading result file: {result_file}")
 
-    # The result file is also a JSONL file. Parse and print each line.
-    for line in file_content.splitlines():
-      if line:
-        parsed_response = json.loads(line)
-        # Pretty-print the JSON for readability
-        print(json.dumps(parsed_response, indent=2))
-        print("-" * 20)
-else:
-    print(f"Job did not succeed. Final state: {batch_job.state.name}")
+file_content_bytes = client.files.download(file=result_file)
+file_content = file_content_bytes.decode("utf-8")
+
+# -------------------------------------------------------------
+# 9. PARSE TRANSLATION AND SAVE
+# -------------------------------------------------------------
+for line in file_content.splitlines():
+    if not line.strip():
+        continue
+
+    parsed = json.loads(line)
+    key = parsed.get("key", "translation")
+    response = parsed.get("response", {})
+    candidates = response.get("candidates", [])
+    if not candidates:
+        continue
+
+    translation_text = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [{}])[0]
+        .get("text", "")
+        .strip()
+    )
+
+    if translation_text:
+        output_file = os.path.join(OUTPUT_DIR, f"{key}_output.txt")
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(translation_text)
+        print(f"Saved translation: {output_file}")
+    else:
+        print("No translation text found in response.")
+
+# -------------------------------------------------------------
+# 10. CLEANUP
+# -------------------------------------------------------------
+print("Cleaning up temporary batch files...")
+client.files.delete(name=uploaded_batch_file.name)
+print("Deleted batch JSONL file from Gemini storage.")
+print("Done.")
